@@ -129,6 +129,13 @@
   }
   #clear-done:hover { color: #e53e3e; }
   #clear-done:disabled { opacity: 0.4; cursor: not-allowed; text-decoration: none; }
+  .status {
+    text-align: center;
+    padding: 12px 20px;
+    font-size: 13px;
+    color: #718096;
+  }
+  .status.error { color: #c53030; background: #fff5f5; }
 </style>
 </head>
 <body>
@@ -142,32 +149,40 @@
       <button id="add-btn">추가</button>
     </div>
     <ul id="list"></ul>
+    <div id="status" class="status" hidden></div>
     <footer>
       <span id="counter">0개</span>
       <button id="clear-done">완료 항목 지우기</button>
     </footer>
   </div>
 
-<script>
-  const STORAGE_KEY = "shopping-list-items";
+<script type="module">
+  // Supabase 연동 쇼핑 리스트 클라이언트 (CRUD를 shopping_items 테이블에 위임)
+  import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+  const SUPABASE_URL = "https://cshvrnaiqgbppuzccgnf.supabase.co";
+  const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_GY86VGpan9tGPlPvQSDbWA_JDeFIgdN";
+  const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+
   const listEl = document.getElementById("list");
   const inputEl = document.getElementById("item-input");
   const addBtn = document.getElementById("add-btn");
   const counterEl = document.getElementById("counter");
   const clearDoneBtn = document.getElementById("clear-done");
+  const statusEl = document.getElementById("status");
 
-  let items = load();
+  let items = [];
 
-  function load() {
-    try {
-      return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
-    } catch {
-      return [];
+  function setStatus(message, isError = false) {
+    if (!message) {
+      statusEl.hidden = true;
+      statusEl.textContent = "";
+      statusEl.classList.remove("error");
+      return;
     }
-  }
-
-  function save() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+    statusEl.hidden = false;
+    statusEl.textContent = message;
+    statusEl.classList.toggle("error", isError);
   }
 
   function render() {
@@ -208,35 +223,86 @@
     clearDoneBtn.disabled = doneCount === 0;
   }
 
-  function add() {
+  async function loadItems() {
+    setStatus("불러오는 중…");
+    const { data, error } = await supabase
+      .from("shopping_items")
+      .select("id, text, done, created_at")
+      .order("created_at", { ascending: true });
+    if (error) {
+      setStatus(`불러오기 실패: ${error.message}`, true);
+      return;
+    }
+    items = data ?? [];
+    setStatus("");
+    render();
+  }
+
+  async function add() {
     const text = inputEl.value.trim();
     if (!text) return;
-    items.push({ id: Date.now() + Math.random(), text, done: false });
+    addBtn.disabled = true;
+    const { data, error } = await supabase
+      .from("shopping_items")
+      .insert({ text, done: false })
+      .select("id, text, done, created_at")
+      .single();
+    addBtn.disabled = false;
+    if (error) {
+      setStatus(`추가 실패: ${error.message}`, true);
+      return;
+    }
+    items.push(data);
     inputEl.value = "";
-    save();
+    setStatus("");
     render();
     inputEl.focus();
   }
 
-  function toggle(id) {
+  async function toggle(id) {
     const item = items.find((i) => i.id === id);
-    if (item) {
-      item.done = !item.done;
-      save();
+    if (!item) return;
+    const next = !item.done;
+    item.done = next;
+    render();
+    const { error } = await supabase
+      .from("shopping_items")
+      .update({ done: next })
+      .eq("id", id);
+    if (error) {
+      item.done = !next;
       render();
+      setStatus(`업데이트 실패: ${error.message}`, true);
     }
   }
 
-  function remove(id) {
+  async function remove(id) {
+    const prev = items;
     items = items.filter((i) => i.id !== id);
-    save();
     render();
+    const { error } = await supabase.from("shopping_items").delete().eq("id", id);
+    if (error) {
+      items = prev;
+      render();
+      setStatus(`삭제 실패: ${error.message}`, true);
+    }
   }
 
-  function clearDone() {
+  async function clearDone() {
+    const doneIds = items.filter((i) => i.done).map((i) => i.id);
+    if (doneIds.length === 0) return;
+    const prev = items;
     items = items.filter((i) => !i.done);
-    save();
     render();
+    const { error } = await supabase
+      .from("shopping_items")
+      .delete()
+      .in("id", doneIds);
+    if (error) {
+      items = prev;
+      render();
+      setStatus(`완료 항목 삭제 실패: ${error.message}`, true);
+    }
   }
 
   addBtn.addEventListener("click", add);
@@ -245,7 +311,7 @@
   });
   clearDoneBtn.addEventListener("click", clearDone);
 
-  render();
+  loadItems();
 </script>
 </body>
 </html>
